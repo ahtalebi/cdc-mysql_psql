@@ -1,0 +1,89 @@
+version: "3.8"
+
+services:
+
+  # ── Source DB ──────────────────────────────────────────
+  mysql:
+    image: mysql:8.0.33
+    container_name: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_USER: debezium
+      MYSQL_PASSWORD: dbzpw
+      MYSQL_DATABASE: shop
+    command:
+      - --server-id=1
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+    ports:
+      - "3307:3306"  #  (host:container)
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "debezium", "-pdbzpw"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Sink DB ────────────────────────────────────────────
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      POSTGRES_USER: pguser
+      POSTGRES_PASSWORD: pgpw
+      POSTGRES_DB: shop
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pguser"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Message Bus ────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    depends_on: [zookeeper]
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+
+  # ── Debezium Kafka Connect ─────────────────────────────
+  connect:
+    image: debezium/connect:2.6          # bundles MySQL connector
+    container_name: connect
+    depends_on:
+      kafka:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-statuses
+      # extra JARs for JDBC sink + Postgres driver
+      CONNECT_PLUGIN_PATH: /kafka/connect,/kafka/extra-plugins
+    volumes:
+      - ./extra-plugins/confluentinc-kafka-connect-jdbc-10.9.5:/kafka/connect/confluentinc-kafka-connect-jdbc
+    ports:
+      - "8083:8083"
